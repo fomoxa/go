@@ -36,7 +36,7 @@ func TestClientAndServerRoundTripAMessage(t *testing.T) {
 	defer client.Disconnect()
 
 	received := make(chan []byte, 1)
-	On(client, 99, func(payload []byte) []byte { return payload }, func(payload []byte) {
+	OnClient(client, 99, func(payload []byte) []byte { return payload }, func(payload []byte) {
 		received <- payload
 	})
 

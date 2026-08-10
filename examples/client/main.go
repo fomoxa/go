@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	port       = "9321"
-	playerEdge = 1
+	port        = "9321"
+	playerEdge  = 1
+	playerInput = 2
 )
 
 // decodePlayer is the one-line adapter cyclone.On needs: the project's own
@@ -33,7 +34,7 @@ func decodePlayer(payload []byte) shared.Player {
 func main() {
 	client := cyclone.NewClient()
 
-	cyclone.On(client, playerEdge, decodePlayer, func(player shared.Player) {
+	cyclone.OnClient(client, playerEdge, decodePlayer, func(player shared.Player) {
 		fmt.Printf("received Player { hp = %d, name = %q }\n", player.HP, player.Name)
 	})
 
@@ -41,8 +42,22 @@ func main() {
 	if err := client.Connect("127.0.0.1:"+port, 5*time.Second, 15*time.Second); err != nil {
 		panic(fmt.Sprintf("connect to 127.0.0.1:%s - is the server example running? %v", port, err))
 	}
+	fmt.Println("connected to server, waiting for Player message...")
 
 	reportedConnected := false
+	go func() {
+		time.Sleep(4 * time.Second)
+		fmt.Println("go func")
+
+		outgoing := shared.PlayerInput{X: 42, Z: "hello"}
+		writer := shared.NewWriter()
+		shared.PlayerInputClientCodec{}.Encode(writer, &outgoing)
+
+		err := client.Send(cyclone.Message{ID: playerInput, Payload: writer.Bytes()})
+		if err != nil {
+			panic(fmt.Sprintf("send message: %v", err))
+		}
+	}()
 	for {
 		for _, event := range client.Poll() {
 			switch event.Kind {
@@ -50,6 +65,12 @@ func main() {
 				if !reportedConnected {
 					reportedConnected = true
 					fmt.Println("connected to server")
+
+					outgoing := shared.PlayerInput{X: 42, Z: "hello"}
+					writer := shared.NewWriter()
+					shared.PlayerInputClientCodec{}.Encode(writer, &outgoing)
+
+					_ = client.Send(cyclone.Message{ID: playerInput, Payload: writer.Bytes()})
 				}
 			case cyclone.ClientDisconnected:
 				fmt.Println("disconnected")

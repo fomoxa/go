@@ -61,6 +61,7 @@ const (
 	ConnMessageReceived ConnectionEventKind = iota
 	ConnPingReceived
 	ConnPongReceived
+	ConnConnected
 	// ConnDisconnected fires at most once per Connection: the peer
 	// disconnected, the socket errored, or Disconnect was called.
 	ConnDisconnected
@@ -83,6 +84,7 @@ const (
 	rawMessage rawEventKind = iota
 	rawPing
 	rawPong
+	rawConnected
 	rawDisconnected
 )
 
@@ -117,6 +119,7 @@ func NewConnection(conn net.Conn, heartbeatInterval, heartbeatTimeout time.Durat
 		events: make(chan rawEvent, 256),
 	}
 	c.connected.Store(true)
+	c.events <- rawEvent{kind: rawConnected}
 	go c.readLoop()
 	return c
 }

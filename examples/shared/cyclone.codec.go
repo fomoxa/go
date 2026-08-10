@@ -8,7 +8,7 @@ package shared
 // This file is self-contained: it carries the Cyclone runtime (Writer,
 // Reader, DecodeError, Limits) as well as every codec, so there is nothing
 // else to add to go.mod. It belongs in the same package as your
-// models (cyclone_codec.go).
+// models (cyclone.codec.go).
 
 // ==========================================================================
 // Cyclone runtime - RFC-0002, carried verbatim.
@@ -84,10 +84,19 @@ type Limits struct {
 	MaxStringLen int
 	// MaxBytesLen is the largest accepted byte length of a bytes blob.
 	MaxBytesLen int
+	// MaxArrayCount is the largest accepted element count of an Array<T>
+	// (RFC-0002 §6). A uint32 count can claim up to 4 GiB of elements
+	// before a single one is even read, so this guards allocation the
+	// same way MaxStringLen/MaxBytesLen do.
+	MaxArrayCount int
 }
 
 // UnlimitedLimits is the permissive default: math.MaxUint32 for every field.
-var UnlimitedLimits = Limits{MaxStringLen: math.MaxUint32, MaxBytesLen: math.MaxUint32}
+var UnlimitedLimits = Limits{
+	MaxStringLen:  math.MaxUint32,
+	MaxBytesLen:   math.MaxUint32,
+	MaxArrayCount: math.MaxUint32,
+}
 
 // Writer appends Cyclone-encoded values to a growable buffer.
 //
@@ -195,6 +204,12 @@ func (w *Writer) WriteString(value string) {
 func (w *Writer) WriteBytes(value []byte) {
 	w.WriteU32(uint32(len(value)))
 	w.buf = append(w.buf, value...)
+}
+
+// WriteArrayCount writes an Array<T>'s element count (RFC-0002 §6) - the
+// caller writes each element itself, in order, right after.
+func (w *Writer) WriteArrayCount(count int) {
+	w.WriteU32(uint32(count))
 }
 
 // Reader reads Cyclone-encoded values from a borrowed buffer.
@@ -374,6 +389,14 @@ func (r *Reader) ReadBytes() ([]byte, error) {
 	return out, nil
 }
 
+// ReadArrayCount reads an Array<T>'s element count (RFC-0002 §6), checked
+// against Limits.MaxArrayCount before the caller reads a single element -
+// the same allocation guard ReadString and ReadBytes apply to their own
+// length prefix.
+func (r *Reader) ReadArrayCount() (int, error) {
+	return r.readLength(r.limits.MaxArrayCount)
+}
+
 func (r *Reader) readLength(limit int) (int, error) {
 	start := r.pos
 	length, err := r.ReadU32()
@@ -436,6 +459,35 @@ func (PlayerEdgeCodec) Decode(r *Reader, value *Player) error {
 	}
 
 	value.Name, err = r.ReadString()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// PlayerInputClientCodec is the "client" codec for PlayerInput, generated from its Cyclone attributes.
+type PlayerInputClientCodec struct{}
+
+// Encode writes the "client" fields of value, in declaration order.
+func (PlayerInputClientCodec) Encode(w *Writer, value *PlayerInput) {
+	w.WriteU32(value.X)
+	w.WriteString(value.Z)
+}
+
+// Decode reads the "client" fields into value, in declaration order.
+//
+// Fields this codec does not carry are left as they were, which is what lets one
+// model be split across several codecs.
+func (PlayerInputClientCodec) Decode(r *Reader, value *PlayerInput) error {
+	var err error
+
+	value.X, err = r.ReadU32()
+	if err != nil {
+		return err
+	}
+
+	value.Z, err = r.ReadString()
 	if err != nil {
 		return err
 	}

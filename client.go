@@ -75,16 +75,17 @@ func (c *Client) registerRaw(messageID uint32, handler func([]byte)) {
 	c.handlers[messageID] = append(c.handlers[messageID], handler)
 }
 
-// On registers a typed handler for messageID on client.
+// OnClient registers a typed handler for messageID on client.
 //
 // This is a package-level function, not a Client method, because Go does
-// not allow a method to introduce its own type parameter beyond its
-// receiver's - see the package doc comment. decode is func([]byte) T,
-// typically a one-line adapter that builds a generated codec's Reader and
-// calls its Decode; handler is func(T). Multiple handlers on one message id
-// all run, in registration order, and nothing here recovers a panic either
-// one raises.
-func On[T any](client *Client, messageID uint32, decode func([]byte) T, handler func(T)) {
+// not allow methods to have type parameters independent of their receiver.
+// Additionally, Go lacks method overloading, so we cannot have two On
+// methods with different handler signatures (func(T) vs func(ConnectionID, T)).
+// Hence OnClient (client-side, payload only) and OnServer (server-side,
+// payload + connection ID) are separate functions.
+//
+// decode is func([]byte) T; handler is func(T).
+func OnClient[T any](client *Client, messageID uint32, decode func([]byte) T, handler func(T)) {
 	client.registerRaw(messageID, func(payload []byte) {
 		handler(decode(payload))
 	})
@@ -99,13 +100,8 @@ func (c *Client) Poll() []ClientEvent {
 		return nil
 	}
 
-	wasConnected := c.connection.IsConnected()
 	rawEvents := c.connection.Poll()
-
 	var events []ClientEvent
-	if !wasConnected && c.connection.IsConnected() {
-		events = append(events, ClientEvent{Kind: ClientConnected})
-	}
 
 	for _, event := range rawEvents {
 		switch event.Kind {
@@ -118,6 +114,8 @@ func (c *Client) Poll() []ClientEvent {
 			events = append(events, ClientEvent{Kind: ClientPongReceived})
 		case ConnDisconnected:
 			events = append(events, ClientEvent{Kind: ClientDisconnected})
+		case ConnConnected:
+			events = append(events, ClientEvent{Kind: ClientConnected})
 		case ConnPingReceived:
 			// Internal to the heartbeat; nothing client-visible about it.
 		}

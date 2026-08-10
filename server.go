@@ -2,6 +2,7 @@ package cyclone
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"time"
 )
@@ -42,6 +43,7 @@ type Server struct {
 	connections []serverSlot
 	nextID      uint64
 	running     bool
+	handlers    map[uint32][]func(ConnectionID, []byte)
 
 	heartbeatInterval time.Duration
 	heartbeatTimeout  time.Duration
@@ -56,7 +58,11 @@ func NewServer() *Server {
 // NewServerWithHeartbeat is like NewServer, but with a heartbeat
 // interval/timeout applied to every connection this server accepts.
 func NewServerWithHeartbeat(heartbeatInterval, heartbeatTimeout time.Duration) *Server {
-	return &Server{heartbeatInterval: heartbeatInterval, heartbeatTimeout: heartbeatTimeout}
+	return &Server{
+		heartbeatInterval: heartbeatInterval,
+		heartbeatTimeout:  heartbeatTimeout,
+		handlers:          make(map[uint32][]func(ConnectionID, []byte)),
+	}
 }
 
 func (s *Server) IsRunning() bool {
@@ -151,6 +157,26 @@ func (s *Server) Broadcast(message Message) {
 	}
 }
 
+// registerRaw is what the package-level generic function On calls into -
+// see the package doc comment for why On cannot be a method of Server.
+func (s *Server) registerRaw(messageID uint32, handler func(ConnectionID, []byte)) {
+	s.handlers[messageID] = append(s.handlers[messageID], handler)
+}
+
+// OnServer registers a typed handler for messageID on server.
+//
+// This is a package-level function, not a Server method, for the same
+// reasons as OnClient: no generic methods, no overloading. Unlike
+// OnClient, the server handler receives the connection ID along with
+// the decoded payload: func(ConnectionID, T).
+//
+// decode is func([]byte) T; handler is func(ConnectionID, T).
+func OnServer[T any](server *Server, messageID uint32, decode func([]byte) T, handler func(ConnectionID, T)) {
+	server.registerRaw(messageID, func(id ConnectionID, payload []byte) {
+		handler(id, decode(payload))
+	})
+}
+
 // Poll accepts any waiting connections, then polls every open one - never
 // blocks. Call this once a tick/frame.
 func (s *Server) Poll() []ServerEvent {
@@ -177,6 +203,10 @@ func (s *Server) Poll() []ServerEvent {
 		for _, event := range slot.connection.Poll() {
 			switch event.Kind {
 			case ConnMessageReceived:
+				fmt.Printf("server received message %d from connection %d\n", event.Message.ID, slot.id)
+				for _, handler := range s.handlers[event.Message.ID] {
+					handler(slot.id, event.Message.Payload)
+				}
 				events = append(events, ServerEvent{Kind: ServerMessageReceived, ID: slot.id, Message: event.Message})
 			case ConnPongReceived:
 				events = append(events, ServerEvent{Kind: ServerPongReceived, ID: slot.id})
