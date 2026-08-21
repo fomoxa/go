@@ -1,235 +1,153 @@
 package cyclone
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"time"
 )
 
-// ConnectionID identifies one accepted connection for the lifetime of a
-// Server. Never reused, even after the connection it named disconnects -
-// stable enough to key a map of per-player state on.
-type ConnectionID uint64
-
-// ServerEventKind identifies what a ServerEvent carries.
-type ServerEventKind int
-
-const (
-	ServerClientConnected ServerEventKind = iota
-	ServerClientDisconnected
-	ServerMessageReceived
-	ServerPongReceived
-)
-
-// ServerEvent is what Server.Poll hands back.
-type ServerEvent struct {
-	Kind ServerEventKind
-	ID   ConnectionID
-	// Message is valid when Kind == ServerMessageReceived.
-	Message Message
+type listener interface {
+	poll() ([]Transport, error)
+	forget(Transport)
+	addr() net.Addr
+	close()
 }
 
-type serverSlot struct {
-	id         ConnectionID
-	connection *Connection
-}
-
-// Server listens for and manages many client connections - the Go
-// counterpart of Cyclone.Unity's CycloneServer.
 type Server struct {
-	listener    net.Listener
-	incoming    chan net.Conn
-	connections []serverSlot
-	nextID      uint64
-	running     bool
-	handlers    map[uint32][]func(ConnectionID, []byte)
+	schema   *Schema
+	cfg      Config
+	listener listener
 
-	heartbeatInterval time.Duration
-	heartbeatTimeout  time.Duration
+	peers   map[PeerID]*Conn
+	order   []PeerID
+	closing []PeerID
+	nextID  PeerID
+
+	events []Event
+	err    error
+	closed bool
 }
 
-// NewServer creates a server with the default 5s/15s heartbeat - call
-// Start to begin listening.
-func NewServer() *Server {
-	return NewServerWithHeartbeat(5*time.Second, 15*time.Second)
-}
-
-// NewServerWithHeartbeat is like NewServer, but with a heartbeat
-// interval/timeout applied to every connection this server accepts.
-func NewServerWithHeartbeat(heartbeatInterval, heartbeatTimeout time.Duration) *Server {
+func newServer(l listener, schema *Schema, cfg Config) *Server {
 	return &Server{
-		heartbeatInterval: heartbeatInterval,
-		heartbeatTimeout:  heartbeatTimeout,
-		handlers:          make(map[uint32][]func(ConnectionID, []byte)),
+		schema:   schema,
+		cfg:      cfg,
+		listener: l,
+		peers:    make(map[PeerID]*Conn),
 	}
 }
 
-func (s *Server) IsRunning() bool {
-	return s.running
+func (s *Server) Addr() net.Addr { return s.listener.addr() }
+
+func (s *Server) Err() error { return s.err }
+
+func (s *Server) Peers() []PeerID {
+	out := make([]PeerID, len(s.order))
+	copy(out, s.order)
+	return out
 }
 
-// Addr is the address actually bound, once Start has succeeded - in
-// particular, the real port the OS chose when addr asked for port 0.
-// Binding to port 0 and reading it back here is the robust way to pick a
-// port for a test or an ephemeral server: no fixed port number can
-// collide with something else already using it.
-func (s *Server) Addr() net.Addr {
-	if s.listener == nil {
+func (s *Server) State(peer PeerID) (State, bool) {
+	c, ok := s.peers[peer]
+	if !ok {
+		return StateClosed, false
+	}
+	return c.State(), true
+}
+
+func (s *Server) Tick(now time.Time) []Event {
+	s.events = nil
+	if s.closed {
 		return nil
 	}
-	return s.listener.Addr()
-}
 
-// Start binds addr and starts accepting connections on a background
-// goroutine - see the package doc comment for why this package uses a
-// goroutine instead of async I/O. Blocks only long enough to bind; it does
-// not wait for a connection.
-func (s *Server) Start(addr string) error {
-	listener, err := net.Listen("tcp", addr)
+	for _, id := range s.closing {
+		s.retire(id)
+	}
+	s.closing = s.closing[:0]
+
+	arrivals, err := s.listener.poll()
 	if err != nil {
-		return err
+		s.err = err
+	}
+	for _, t := range arrivals {
+		s.adopt(t)
 	}
 
-	s.listener = listener
-	s.incoming = make(chan net.Conn, 16)
-	s.running = true
-
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return // the listener was closed (Stop) or errored fatally
-			}
-			select {
-			case s.incoming <- conn:
-			default:
-				// The caller isn't polling fast enough to keep up with
-				// accepts; refuse this one rather than block the accept
-				// loop (and every other pending connection) forever.
-				_ = conn.Close()
-			}
+	for _, id := range s.order {
+		c, ok := s.peers[id]
+		if !ok {
+			continue
 		}
-	}()
+		s.events = append(s.events, c.Tick(now)...)
+		if c.finished() {
+			s.closing = append(s.closing, id)
+		}
+	}
+	return s.events
+}
 
+func (s *Server) adopt(t Transport) {
+	s.nextID++
+	id := s.nextID
+	c := newServerConn(t, s.schema, s.cfg, id)
+	s.peers[id] = c
+	s.order = append(s.order, id)
+}
+
+func (s *Server) retire(id PeerID) {
+	c, ok := s.peers[id]
+	if !ok {
+		return
+	}
+	c.finish()
+	s.listener.forget(c.transport)
+	delete(s.peers, id)
+	for i, other := range s.order {
+		if other == id {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
+	}
+}
+
+func (s *Server) Send(peer PeerID, messageID uint32, payload []byte) error {
+	c, ok := s.peers[peer]
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownPeer, peer)
+	}
+	return c.Send(messageID, payload)
+}
+
+func (s *Server) Disconnect(peer PeerID) {
+	c, ok := s.peers[peer]
+	if !ok {
+		return
+	}
+	_ = c.Close()
+	s.listener.forget(c.transport)
+	delete(s.peers, peer)
+	for i, other := range s.order {
+		if other == peer {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
+	}
+}
+
+func (s *Server) Close() error {
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	for _, id := range append([]PeerID(nil), s.order...) {
+		if c, ok := s.peers[id]; ok {
+			_ = c.Close()
+		}
+		delete(s.peers, id)
+	}
+	s.order = nil
+	s.closing = nil
+	s.listener.close()
 	return nil
-}
-
-// Stop disconnects every open connection and stops accepting new ones.
-func (s *Server) Stop() {
-	s.running = false
-	if s.listener != nil {
-		_ = s.listener.Close()
-		s.listener = nil
-	}
-	for _, slot := range s.connections {
-		slot.connection.Disconnect()
-	}
-	s.connections = nil
-}
-
-func (s *Server) ConnectionCount() int {
-	return len(s.connections)
-}
-
-func (s *Server) ConnectionIDs() []ConnectionID {
-	ids := make([]ConnectionID, len(s.connections))
-	for i, slot := range s.connections {
-		ids[i] = slot.id
-	}
-	return ids
-}
-
-func (s *Server) SendTo(id ConnectionID, message Message) error {
-	for _, slot := range s.connections {
-		if slot.id == id {
-			return slot.connection.Send(message)
-		}
-	}
-	return errors.New("cyclone: no connection with that id")
-}
-
-func (s *Server) Broadcast(message Message) {
-	for _, slot := range s.connections {
-		if slot.connection.IsConnected() {
-			_ = slot.connection.Send(message)
-		}
-	}
-}
-
-// registerRaw is what the package-level generic function On calls into -
-// see the package doc comment for why On cannot be a method of Server.
-func (s *Server) registerRaw(messageID uint32, handler func(ConnectionID, []byte)) {
-	s.handlers[messageID] = append(s.handlers[messageID], handler)
-}
-
-// OnServer registers a typed handler for messageID on server.
-//
-// This is a package-level function, not a Server method, for the same
-// reasons as OnClient: no generic methods, no overloading. Unlike
-// OnClient, the server handler receives the connection ID along with
-// the decoded payload: func(ConnectionID, T).
-//
-// decode is func([]byte) T; handler is func(ConnectionID, T).
-func OnServer[T any](server *Server, messageID uint32, decode func([]byte) T, handler func(ConnectionID, T)) {
-	server.registerRaw(messageID, func(id ConnectionID, payload []byte) {
-		handler(id, decode(payload))
-	})
-}
-
-// Poll accepts any waiting connections, then polls every open one - never
-// blocks. Call this once a tick/frame.
-func (s *Server) Poll() []ServerEvent {
-	var events []ServerEvent
-
-	if s.incoming != nil {
-	drainIncoming:
-		for {
-			select {
-			case conn := <-s.incoming:
-				connection := NewConnection(conn, s.heartbeatInterval, s.heartbeatTimeout)
-				id := ConnectionID(s.nextID)
-				s.nextID++
-				s.connections = append(s.connections, serverSlot{id: id, connection: connection})
-				events = append(events, ServerEvent{Kind: ServerClientConnected, ID: id})
-			default:
-				break drainIncoming
-			}
-		}
-	}
-
-	var disconnected map[ConnectionID]bool
-	for _, slot := range s.connections {
-		for _, event := range slot.connection.Poll() {
-			switch event.Kind {
-			case ConnMessageReceived:
-				fmt.Printf("server received message %d from connection %d\n", event.Message.ID, slot.id)
-				for _, handler := range s.handlers[event.Message.ID] {
-					handler(slot.id, event.Message.Payload)
-				}
-				events = append(events, ServerEvent{Kind: ServerMessageReceived, ID: slot.id, Message: event.Message})
-			case ConnPongReceived:
-				events = append(events, ServerEvent{Kind: ServerPongReceived, ID: slot.id})
-			case ConnDisconnected:
-				events = append(events, ServerEvent{Kind: ServerClientDisconnected, ID: slot.id})
-				if disconnected == nil {
-					disconnected = make(map[ConnectionID]bool)
-				}
-				disconnected[slot.id] = true
-			case ConnPingReceived:
-			}
-		}
-	}
-
-	if len(disconnected) > 0 {
-		remaining := s.connections[:0]
-		for _, slot := range s.connections {
-			if !disconnected[slot.id] {
-				remaining = append(remaining, slot)
-			}
-		}
-		s.connections = remaining
-	}
-
-	return events
 }
