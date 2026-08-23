@@ -1,4 +1,3 @@
-/cyclone-go
-/examples/server/server
-/examples/client/client
 *.test
+*.out
+/bin/

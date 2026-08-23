@@ -1,3 +1,3 @@
-module github.com/cyclone-protocol/cyclone-go
+module github.com/fomoxa/cyclone-go
 
-go 1.25.0
+go 1.21
