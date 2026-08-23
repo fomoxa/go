@@ -1,6 +1,6 @@
 package echoschema
 
-import cyclone "github.com/cyclone-protocol/cyclone-go"
+import fomoxa "github.com/fomoxa/cyclone-go"
 
 const (
 	SchemaFingerprint uint64 = 0x9E3779B97F4A7C15
@@ -13,8 +13,8 @@ var (
 	replyPrefixes = []uint64{0xD1B54A32D192ED03}
 )
 
-func New() *cyclone.Schema {
-	schema, err := cyclone.NewSchema(SchemaFingerprint, []cyclone.Message{
+func New() *fomoxa.Schema {
+	schema, err := fomoxa.NewSchema(SchemaFingerprint, []fomoxa.Message{
 		{ID: EchoMessageID, Fingerprint: echoPrefixes[len(echoPrefixes)-1], Prefixes: echoPrefixes},
 		{ID: ReplyMessageID, Fingerprint: replyPrefixes[len(replyPrefixes)-1], Prefixes: replyPrefixes},
 	})

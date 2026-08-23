@@ -1,4 +1,4 @@
-package cyclone
+package fomoxa
 
 import (
 	"errors"
@@ -137,7 +137,7 @@ func (s *session) clientHandshake(payload []byte) outcome {
 		s.state = StateReady
 		return outcome{event: &Event{Kind: EventReady}}
 	}
-	return s.terminate(EventHandshakeFailed, v, fmt.Errorf("cyclone: handshake refused: %s", v))
+	return s.terminate(EventHandshakeFailed, v, fmt.Errorf("fomoxa: handshake refused: %s", v))
 }
 
 func (s *session) failHandshake(err error) outcome {
@@ -161,7 +161,7 @@ func (s *session) judgeHello(payload []byte) outcome {
 		return s.refuse(VerdictMalformed, err)
 	}
 	if h.version != ProtocolVersion {
-		return s.refuse(VerdictVersion, fmt.Errorf("cyclone: peer speaks handshake version %d, not %d", h.version, ProtocolVersion))
+		return s.refuse(VerdictVersion, fmt.Errorf("fomoxa: peer speaks handshake version %d, not %d", h.version, ProtocolVersion))
 	}
 	if h.fingerprint == s.schema.Fingerprint() {
 		return s.accept()
@@ -173,7 +173,7 @@ func (s *session) judgeHello(payload []byte) outcome {
 		switch check {
 		case checkReject:
 			return s.refuse(VerdictConflict, fmt.Errorf(
-				"cyclone: message 0x%08X: the fields both ends carry do not agree", item.id))
+				"fomoxa: message 0x%08X: the fields both ends carry do not agree", item.id))
 		case checkNeedPrefix:
 			need = append(need, queryItem{id: item.id, fieldCount: fieldCount})
 		}
@@ -211,7 +211,7 @@ func (s *session) judgeQueryReply(payload []byte) outcome {
 		}
 		if items[i].fingerprint != local {
 			return s.refuse(VerdictConflict, fmt.Errorf(
-				"cyclone: message 0x%08X: the fields both ends carry do not agree", asked.id))
+				"fomoxa: message 0x%08X: the fields both ends carry do not agree", asked.id))
 		}
 	}
 	s.pendingQuery = nil
@@ -242,7 +242,7 @@ func (s *session) tick(now time.Time) outcome {
 	if s.role == roleClient && s.state == StateHandshaking {
 		if now.Sub(s.startedAt) >= s.cfg.HandshakeTimeout {
 			return s.terminate(EventHandshakeFailed, VerdictMalformed,
-				fmt.Errorf("cyclone: no verdict within %s", s.cfg.HandshakeTimeout))
+				fmt.Errorf("fomoxa: no verdict within %s", s.cfg.HandshakeTimeout))
 		}
 		return outcome{}
 	}
@@ -250,7 +250,7 @@ func (s *session) tick(now time.Time) outcome {
 	if s.probing {
 		if now.Sub(s.probeSentAt) >= s.cfg.HeartbeatTimeout {
 			return s.terminate(EventDisconnected, VerdictAccept,
-				fmt.Errorf("cyclone: peer did not answer a probe within %s", s.cfg.HeartbeatTimeout))
+				fmt.Errorf("fomoxa: peer did not answer a probe within %s", s.cfg.HeartbeatTimeout))
 		}
 		return outcome{}
 	}
@@ -276,7 +276,7 @@ func (s *session) transportClosed(cause error) outcome {
 		return outcome{}
 	}
 	if cause == nil {
-		cause = errors.New("cyclone: peer closed the connection")
+		cause = errors.New("fomoxa: peer closed the connection")
 	}
 	return s.terminate(EventDisconnected, VerdictAccept, cause)
 }

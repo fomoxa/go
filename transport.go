@@ -1,4 +1,4 @@
-package cyclone
+package fomoxa
 
 import "fmt"
 
@@ -123,7 +123,7 @@ func (s *frameSource) next() (frame, srcStatus, error) {
 		case StatusError:
 			err := transportError(s.t)
 			if err == nil {
-				err = fmt.Errorf("cyclone: transport failed")
+				err = fmt.Errorf("fomoxa: transport failed")
 			}
 			return frame{}, srcError, err
 		case StatusOK:
@@ -140,7 +140,7 @@ func (s *frameSource) next() (frame, srcStatus, error) {
 			}
 			return f, srcFrame, nil
 		default:
-			return frame{}, srcError, fmt.Errorf("cyclone: transport returned %s", status)
+			return frame{}, srcError, fmt.Errorf("fomoxa: transport returned %s", status)
 		}
 	}
 }

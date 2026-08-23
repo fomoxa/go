@@ -1,4 +1,4 @@
-package cyclone
+package fomoxa
 
 import (
 	"fmt"
@@ -32,14 +32,14 @@ func NewSchema(fingerprint uint64, messages []Message) (*Schema, error) {
 
 	for i, m := range s.messages {
 		if _, seen := s.byID[m.ID]; seen {
-			return nil, fmt.Errorf("cyclone: message id 0x%08X is declared twice", m.ID)
+			return nil, fmt.Errorf("fomoxa: message id 0x%08X is declared twice", m.ID)
 		}
 		if len(m.Prefixes) > MaxFieldCount {
-			return nil, fmt.Errorf("cyclone: message 0x%08X has %d fields, more than the %d a hello can carry",
+			return nil, fmt.Errorf("fomoxa: message 0x%08X has %d fields, more than the %d a hello can carry",
 				m.ID, len(m.Prefixes), MaxFieldCount)
 		}
 		if n := len(m.Prefixes); n > 0 && m.Prefixes[n-1] != m.Fingerprint {
-			return nil, fmt.Errorf("cyclone: message 0x%08X: last prefix 0x%016X is not the message fingerprint 0x%016X",
+			return nil, fmt.Errorf("fomoxa: message 0x%08X: last prefix 0x%016X is not the message fingerprint 0x%016X",
 				m.ID, m.Prefixes[n-1], m.Fingerprint)
 		}
 		s.byID[m.ID] = i

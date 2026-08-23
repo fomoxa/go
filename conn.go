@@ -1,4 +1,4 @@
-package cyclone
+package fomoxa
 
 import (
 	"fmt"
@@ -11,21 +11,22 @@ type Conn struct {
 	session   *session
 	cfg       Config
 
-	peer      PeerID
-	outbound  [][]byte
-	dead      bool
-	deadCause error
-	announced bool
-	closed    bool
-	events    []Event
+	peer           PeerID
+	outbound       [][]byte
+	outboundBytesN int
+	dead           bool
+	deadCause      error
+	announced      bool
+	closed         bool
+	events         []Event
 }
 
 func NewConn(t Transport, schema *Schema, cfg Config) (*Conn, error) {
 	if t == nil {
-		return nil, fmt.Errorf("cyclone: transport is nil")
+		return nil, fmt.Errorf("fomoxa: transport is nil")
 	}
 	if schema == nil {
-		return nil, fmt.Errorf("cyclone: schema is nil")
+		return nil, fmt.Errorf("fomoxa: schema is nil")
 	}
 	if _, err := encodeHandshake(encodeHello(schema)); err != nil {
 		return nil, err
@@ -41,10 +42,10 @@ func NewConn(t Transport, schema *Schema, cfg Config) (*Conn, error) {
 
 func NewPeerConn(t Transport, schema *Schema, cfg Config) (*Conn, error) {
 	if t == nil {
-		return nil, fmt.Errorf("cyclone: transport is nil")
+		return nil, fmt.Errorf("fomoxa: transport is nil")
 	}
 	if schema == nil {
-		return nil, fmt.Errorf("cyclone: schema is nil")
+		return nil, fmt.Errorf("fomoxa: schema is nil")
 	}
 	return newServerConn(t, schema, cfg.normalized(), 0), nil
 }
@@ -127,6 +128,7 @@ func (c *Conn) Send(messageID uint32, payload []byte) error {
 		return nil
 	case StatusPending:
 		c.outbound = append(c.outbound, f)
+		c.outboundBytesN += len(f)
 		return nil
 	case StatusTooLarge:
 		return fmt.Errorf("%w: %d bytes", ErrTransportLimit, len(f))
@@ -154,6 +156,7 @@ func (c *Conn) flush() {
 	for len(c.outbound) > 0 {
 		switch c.transport.Send(c.outbound[0]) {
 		case StatusOK, StatusTooLarge:
+			c.outboundBytesN -= len(c.outbound[0])
 			c.outbound = append(c.outbound[:0], c.outbound[1:]...)
 		case StatusPending:
 			return
@@ -191,7 +194,18 @@ func (c *Conn) drain(now time.Time) {
 
 func (c *Conn) apply(o outcome) {
 	if o.frame != nil {
+		// Queue behind whatever is already waiting, never overwrite it: a
+		// refusal verdict lost that way leaves the peer waiting out its
+		// deadline without ever learning why. The protocol caps how many
+		// control frames can be owed at once, so passing the ceiling means an
+		// assumption broke - the peer stopped reading, which is the same "not
+		// keeping up" a heartbeat timeout reports (02 §8).
+		if c.outboundBytesN+len(o.frame) > maxOutboundBytes {
+			c.markDead(fmt.Errorf("fomoxa: peer stopped reading, %d bytes still pending", c.outboundBytesN))
+			return
+		}
 		c.outbound = append(c.outbound, o.frame)
+		c.outboundBytesN += len(o.frame)
 		c.flush()
 	}
 	if o.event == nil {
@@ -210,6 +224,11 @@ func (c *Conn) apply(o outcome) {
 		c.dead = true
 	}
 }
+
+// One data frame plus the handful of control frames the protocol can owe at
+// any moment: one probe per silence window, one reply per probe, and at most
+// one query round per session.
+const maxOutboundBytes = 64 * 1024
 
 func (c *Conn) markDead(cause error) {
 	if c.dead {

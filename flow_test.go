@@ -1,4 +1,4 @@
-package cyclone
+package fomoxa
 
 import (
 	"bytes"
@@ -277,5 +277,48 @@ func TestPayloadOutlivesTheTick(t *testing.T) {
 	}
 	if string(kept) != "first payload" {
 		t.Fatalf("the payload handed to the application became %q", kept)
+	}
+}
+
+// 02 §8: the pending queue must have a ceiling. A peer that probes every tick
+// while never reading keeps our silence clock alive, so the heartbeat never
+// ends the session - only the ceiling does.
+func TestABlockedTransportAndAProbingPeerStopAtTheOutboundCeiling(t *testing.T) {
+	h := readyClient(t, DefaultConfig())
+	h.wire.blocked = true
+
+	ended := false
+	for i := 0; i < 200000 && !ended; i++ {
+		h.wire.deliver(probeFrame)
+		if _, ok := kindOf(h.tick(time.Millisecond), EventDisconnected); ok {
+			ended = true
+		}
+	}
+
+	if !ended {
+		t.Fatal("the ceiling never ended the session, so the queue grew without bound")
+	}
+	if got := len(h.conn.outbound); got == 0 {
+		t.Fatal("the outbound queue was emptied rather than capped")
+	}
+}
+
+// 01 §6: the UDP receive queue is bounded and the oldest datagram is the one
+// that goes, so the freshest data survives a burst.
+func TestUDPQueueDropsTheOldestDatagram(t *testing.T) {
+	cfg := DefaultConfig()
+	peer := &udpPeer{}
+	for i := 0; i < cfg.MaxPeerBacklog+5; i++ {
+		if len(peer.inbox) >= cfg.MaxPeerBacklog {
+			peer.inbox = peer.inbox[1:]
+		}
+		peer.inbox = append(peer.inbox, []byte{byte(i)})
+	}
+
+	if len(peer.inbox) != cfg.MaxPeerBacklog {
+		t.Fatalf("queue holds %d datagrams, want %d", len(peer.inbox), cfg.MaxPeerBacklog)
+	}
+	if got := peer.inbox[0][0]; got != 5 {
+		t.Fatalf("oldest surviving datagram is %d, want 5 - the first five should have been dropped", got)
 	}
 }

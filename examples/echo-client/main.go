@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	cyclone "github.com/cyclone-protocol/cyclone-go"
-	"github.com/cyclone-protocol/cyclone-go/examples/echoschema"
+	fomoxa "github.com/fomoxa/cyclone-go"
+	"github.com/fomoxa/cyclone-go/examples/echoschema"
 )
 
 func main() {
@@ -16,13 +16,13 @@ func main() {
 	flag.Parse()
 
 	schema := echoschema.New()
-	var conn *cyclone.Conn
+	var conn *fomoxa.Conn
 	var err error
 	switch *network {
 	case "tcp":
-		conn, err = cyclone.DialTCP(*address, schema, cyclone.DefaultConfig())
+		conn, err = fomoxa.DialTCP(*address, schema, fomoxa.DefaultConfig())
 	case "udp":
-		conn, err = cyclone.DialUDP(*address, schema, cyclone.DefaultConfig())
+		conn, err = fomoxa.DialUDP(*address, schema, fomoxa.DefaultConfig())
 	default:
 		log.Fatalf("unknown network %q", *network)
 	}
@@ -39,20 +39,20 @@ func main() {
 	for now := range tick.C {
 		for _, event := range conn.Tick(now) {
 			switch event.Kind {
-			case cyclone.EventConnected:
+			case fomoxa.EventConnected:
 				fmt.Println("pipe open, waiting for the verdict")
-			case cyclone.EventReady:
+			case fomoxa.EventReady:
 				fmt.Println("ready")
-			case cyclone.EventMessage:
+			case fomoxa.EventMessage:
 				fmt.Printf("echo of %d bytes on message 0x%08X: %q\n", len(event.Payload), event.MessageID, event.Payload)
-			case cyclone.EventHandshakeFailed:
+			case fomoxa.EventHandshakeFailed:
 				log.Fatalf("handshake refused (%s): %v", event.Verdict, event.Err)
-			case cyclone.EventDisconnected:
+			case fomoxa.EventDisconnected:
 				log.Fatalf("disconnected: %v", event.Err)
 			}
 		}
 
-		if conn.State() == cyclone.StateReady && now.After(nextSend) {
+		if conn.State() == fomoxa.StateReady && now.After(nextSend) {
 			counter++
 			payload := []byte(fmt.Sprintf("hello %d", counter))
 			switch err := conn.Send(echoschema.EchoMessageID, payload); {

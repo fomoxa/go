@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	cyclone "github.com/cyclone-protocol/cyclone-go"
-	"github.com/cyclone-protocol/cyclone-go/examples/echoschema"
+	fomoxa "github.com/fomoxa/cyclone-go"
+	"github.com/fomoxa/cyclone-go/examples/echoschema"
 )
 
 func main() {
@@ -16,13 +16,13 @@ func main() {
 	flag.Parse()
 
 	schema := echoschema.New()
-	var server *cyclone.Server
+	var server *fomoxa.Server
 	var err error
 	switch *network {
 	case "tcp":
-		server, err = cyclone.ListenTCP(*address, schema, cyclone.DefaultConfig())
+		server, err = fomoxa.ListenTCP(*address, schema, fomoxa.DefaultConfig())
 	case "udp":
-		server, err = cyclone.ListenUDP(*address, schema, cyclone.DefaultConfig())
+		server, err = fomoxa.ListenUDP(*address, schema, fomoxa.DefaultConfig())
 	default:
 		log.Fatalf("unknown network %q", *network)
 	}
@@ -31,25 +31,25 @@ func main() {
 	}
 	defer server.Close()
 
-	fmt.Printf("cyclone echo server on %s %s\n", *network, server.Addr())
+	fmt.Printf("fomoxa echo server on %s %s\n", *network, server.Addr())
 
 	tick := time.NewTicker(16 * time.Millisecond)
 	defer tick.Stop()
 	for now := range tick.C {
 		for _, event := range server.Tick(now) {
 			switch event.Kind {
-			case cyclone.EventConnected:
+			case fomoxa.EventConnected:
 				fmt.Printf("peer %d connected\n", event.Peer)
-			case cyclone.EventReady:
+			case fomoxa.EventReady:
 				fmt.Printf("peer %d ready\n", event.Peer)
-			case cyclone.EventMessage:
+			case fomoxa.EventMessage:
 				fmt.Printf("peer %d sent %d bytes on message 0x%08X\n", event.Peer, len(event.Payload), event.MessageID)
 				if err := server.Send(event.Peer, echoschema.ReplyMessageID, event.Payload); err != nil {
 					fmt.Printf("peer %d echo failed: %v\n", event.Peer, err)
 				}
-			case cyclone.EventHandshakeFailed:
+			case fomoxa.EventHandshakeFailed:
 				fmt.Printf("peer %d refused (%s): %v\n", event.Peer, event.Verdict, event.Err)
-			case cyclone.EventDisconnected:
+			case fomoxa.EventDisconnected:
 				fmt.Printf("peer %d gone: %v\n", event.Peer, event.Err)
 			}
 		}

@@ -1,6 +1,6 @@
 //go:build unix
 
-package cyclone
+package fomoxa
 
 import (
 	"errors"
@@ -210,6 +210,9 @@ func (u *udpTransport) Close() {
 	_ = u.conn.Close()
 }
 
+// How many distinct source addresses one endpoint will track at once.
+const maxTrackedPeers = 1024
+
 type udpPeer struct {
 	owner  *udpListener
 	addr   syscall.Sockaddr
@@ -314,7 +317,7 @@ func adoptTCP(fd int) (*net.TCPConn, error) {
 		_ = syscall.Close(fd)
 		return nil, err
 	}
-	file := os.NewFile(uintptr(fd), "cyclone-tcp")
+	file := os.NewFile(uintptr(fd), "fomoxa-tcp")
 	conn, err := net.FileConn(file)
 	_ = file.Close()
 	if err != nil {
@@ -323,7 +326,7 @@ func adoptTCP(fd int) (*net.TCPConn, error) {
 	tcp, ok := conn.(*net.TCPConn)
 	if !ok {
 		_ = conn.Close()
-		return nil, fmt.Errorf("cyclone: accepted connection is %T, not TCP", conn)
+		return nil, fmt.Errorf("fomoxa: accepted connection is %T, not TCP", conn)
 	}
 	return tcp, nil
 }
@@ -373,12 +376,23 @@ func (l *udpListener) poll() ([]Transport, error) {
 		key := sockaddrKey(from)
 		peer, known := l.peers[key]
 		if !known {
+			// A UDP port hears from anyone, so an unbounded peer table is a
+			// stream of unknown source addresses away from exhausting memory.
+			// Past the ceiling a new address is treated exactly like a
+			// stranger's packet: dropped silently, running sessions untouched
+			// (01 §10).
+			if len(l.peers) >= maxTrackedPeers {
+				continue
+			}
 			peer = &udpPeer{owner: l, addr: from, key: key}
 			l.peers[key] = peer
 			arrivals = append(arrivals, peer)
 		}
 		if len(peer.inbox) >= l.cfg.MaxPeerBacklog {
-			continue
+			// The oldest goes, not the newest: a real-time peer is better
+			// served by fresh data, and transport may not read the payload to
+			// decide otherwise (01 §6, §12).
+			peer.inbox = peer.inbox[1:]
 		}
 		packet := make([]byte, n)
 		copy(packet, l.scratch[:n])

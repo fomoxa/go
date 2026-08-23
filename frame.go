@@ -1,4 +1,4 @@
-package cyclone
+package fomoxa
 
 import (
 	"encoding/binary"
@@ -63,7 +63,7 @@ func frameErrorf(format string, args ...any) *FrameError {
 	return &FrameError{msg: fmt.Sprintf(format, args...)}
 }
 
-var errIncomplete = errors.New("cyclone: frame is incomplete")
+var errIncomplete = errors.New("fomoxa: frame is incomplete")
 
 func encodeData(messageID uint32, payload []byte) ([]byte, error) {
 	if len(payload) > MaxMessagePayload {
@@ -81,7 +81,7 @@ func encodeData(messageID uint32, payload []byte) ([]byte, error) {
 
 func encodeHandshake(payload []byte) ([]byte, error) {
 	if len(payload) > MaxHandshakePayload {
-		return nil, frameErrorf("cyclone: handshake payload of %d bytes exceeds %d", len(payload), MaxHandshakePayload)
+		return nil, frameErrorf("fomoxa: handshake payload of %d bytes exceeds %d", len(payload), MaxHandshakePayload)
 	}
 	out := make([]byte, handshakeHeaderLen+len(payload))
 	out[0] = byte(FrameHandshake)
@@ -102,19 +102,19 @@ func decodeFrame(b []byte) (frame, int, error) {
 	case FrameData:
 		if len(b) < dataHeaderLen {
 			if len(b) >= 2 && b[1] != magicC {
-				return frame{}, 0, frameErrorf("cyclone: data frame magic is 0x%02X, not 'C'", b[1])
+				return frame{}, 0, frameErrorf("fomoxa: data frame magic is 0x%02X, not 'C'", b[1])
 			}
 			if len(b) >= 3 && b[2] != magicY {
-				return frame{}, 0, frameErrorf("cyclone: data frame magic is 0x%02X, not 'Y'", b[2])
+				return frame{}, 0, frameErrorf("fomoxa: data frame magic is 0x%02X, not 'Y'", b[2])
 			}
 			return frame{}, 0, errIncomplete
 		}
 		if b[1] != magicC || b[2] != magicY {
-			return frame{}, 0, frameErrorf("cyclone: data frame magic is 0x%02X 0x%02X, not 'C' 'Y'", b[1], b[2])
+			return frame{}, 0, frameErrorf("fomoxa: data frame magic is 0x%02X 0x%02X, not 'C' 'Y'", b[1], b[2])
 		}
 		length := binary.LittleEndian.Uint32(b[7:11])
 		if length > MaxMessagePayload {
-			return frame{}, 0, frameErrorf("cyclone: message payload of %d bytes exceeds %d", length, MaxMessagePayload)
+			return frame{}, 0, frameErrorf("fomoxa: message payload of %d bytes exceeds %d", length, MaxMessagePayload)
 		}
 		total := dataHeaderLen + int(length)
 		if len(b) < total {
@@ -131,7 +131,7 @@ func decodeFrame(b []byte) (frame, int, error) {
 		}
 		length := binary.LittleEndian.Uint32(b[1:5])
 		if length > MaxHandshakePayload {
-			return frame{}, 0, frameErrorf("cyclone: handshake payload of %d bytes exceeds %d", length, MaxHandshakePayload)
+			return frame{}, 0, frameErrorf("fomoxa: handshake payload of %d bytes exceeds %d", length, MaxHandshakePayload)
 		}
 		total := handshakeHeaderLen + int(length)
 		if len(b) < total {
@@ -139,20 +139,20 @@ func decodeFrame(b []byte) (frame, int, error) {
 		}
 		return frame{typ: FrameHandshake, payload: b[handshakeHeaderLen:total]}, total, nil
 	default:
-		return frame{}, 0, frameErrorf("cyclone: frame type 0x%02X is not 0..3", b[0])
+		return frame{}, 0, frameErrorf("fomoxa: frame type 0x%02X is not 0..3", b[0])
 	}
 }
 
 func decodePacket(b []byte) (frame, error) {
 	f, n, err := decodeFrame(b)
 	if err == errIncomplete {
-		return frame{}, frameErrorf("cyclone: packet of %d bytes ended before the frame it declared", len(b))
+		return frame{}, frameErrorf("fomoxa: packet of %d bytes ended before the frame it declared", len(b))
 	}
 	if err != nil {
 		return frame{}, err
 	}
 	if n != len(b) {
-		return frame{}, frameErrorf("cyclone: %d bytes left over after a complete frame", len(b)-n)
+		return frame{}, frameErrorf("fomoxa: %d bytes left over after a complete frame", len(b)-n)
 	}
 	return f, nil
 }

@@ -1,6 +1,6 @@
 //go:build unix
 
-package cyclone
+package fomoxa
 
 import (
 	"errors"

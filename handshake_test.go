@@ -1,4 +1,4 @@
-package cyclone
+package fomoxa
 
 import (
 	"encoding/binary"

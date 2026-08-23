@@ -1,4 +1,4 @@
-package cyclone
+package fomoxa
 
 import (
 	"encoding/binary"
@@ -46,7 +46,7 @@ func (v Verdict) String() string {
 	}
 }
 
-var errHandshakeMalformed = errors.New("cyclone: malformed handshake payload")
+var errHandshakeMalformed = errors.New("fomoxa: malformed handshake payload")
 
 type helloItem struct {
 	id          uint32
