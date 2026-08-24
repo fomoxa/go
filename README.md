@@ -8,7 +8,7 @@ No dependencies beyond the standard library. No goroutines. No `context`. No
 engine.
 
 ```
-go get github.com/fomoxa/cyclone-go
+go get github.com/fomoxa/go
 ```
 
 ## What this is, and what it answers to

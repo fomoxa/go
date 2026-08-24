@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	fomoxa "github.com/fomoxa/cyclone-go"
-	"github.com/fomoxa/cyclone-go/examples/echoschema"
+	fomoxa "github.com/fomoxa/go"
+	"github.com/fomoxa/go/examples/echoschema"
 )
 
 func main() {

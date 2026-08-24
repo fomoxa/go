@@ -1,6 +1,6 @@
 package echoschema
 
-import fomoxa "github.com/fomoxa/cyclone-go"
+import fomoxa "github.com/fomoxa/go"
 
 const (
 	SchemaFingerprint uint64 = 0x9E3779B97F4A7C15
