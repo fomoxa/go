@@ -188,3 +188,11 @@ func (d *streamDecoder) next() (frame, bool, error) {
 }
 
 func (d *streamDecoder) buffered() int { return len(d.buf) - d.off }
+
+func (d *streamDecoder) shrink() {
+	live := d.buf[d.off:]
+	fresh := make([]byte, len(live))
+	copy(fresh, live)
+	d.buf = fresh
+	d.off = 0
+}

@@ -135,6 +135,12 @@ func (s *Server) Disconnect(peer PeerID) {
 	}
 }
 
+func (s *Server) Shrink() {
+	for _, c := range s.peers {
+		c.Shrink()
+	}
+}
+
 func (s *Server) Close() error {
 	if s.closed {
 		return nil

@@ -80,17 +80,27 @@ const (
 )
 
 type frameSource struct {
-	t   Transport
-	buf []byte
-	dec *streamDecoder
+	t        Transport
+	buf      []byte
+	baseSize int
+	dec      *streamDecoder
 }
 
 func newFrameSource(t Transport, bufSize int) *frameSource {
-	s := &frameSource{t: t, buf: make([]byte, bufSize)}
+	s := &frameSource{t: t, buf: make([]byte, bufSize), baseSize: bufSize}
 	if t.Kind() == KindStream {
 		s.dec = &streamDecoder{}
 	}
 	return s
+}
+
+func (s *frameSource) shrink() {
+	if len(s.buf) > s.baseSize {
+		s.buf = make([]byte, s.baseSize)
+	}
+	if s.dec != nil {
+		s.dec.shrink()
+	}
 }
 
 func (s *frameSource) next() (frame, srcStatus, error) {

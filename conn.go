@@ -78,6 +78,15 @@ func (c *Conn) finish() {
 
 func (c *Conn) Transport() Transport { return c.transport }
 
+func (c *Conn) Shrink() {
+	c.source.shrink()
+	if len(c.outbound) < cap(c.outbound) {
+		fresh := make([][]byte, len(c.outbound))
+		copy(fresh, c.outbound)
+		c.outbound = fresh
+	}
+}
+
 func (c *Conn) Tick(now time.Time) []Event {
 	c.events = nil
 	if c.closed {

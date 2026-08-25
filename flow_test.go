@@ -125,6 +125,60 @@ func TestTooSmallBufferGrowsAndKeepsThePacket(t *testing.T) {
 	}
 }
 
+func TestShrinkAfterAStreamBurstStillDeliversTheNextMessage(t *testing.T) {
+	h := readyClient(t, DefaultConfig())
+
+	big := bytes.Repeat([]byte{0x7}, 5000)
+	data, _ := encodeData(1, big)
+	h.wire.deliver(data)
+	e := mustEvent(t, h.tick(time.Second), EventMessage)
+	if e.MessageID != 1 || !bytes.Equal(e.Payload, big) {
+		t.Fatalf("message %d of %d bytes, want the burst payload intact", e.MessageID, len(e.Payload))
+	}
+
+	h.conn.Shrink()
+
+	small := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	data, _ = encodeData(2, small)
+	h.wire.deliver(data)
+	e = mustEvent(t, h.tick(2*time.Second), EventMessage)
+	if e.MessageID != 2 || !bytes.Equal(e.Payload, small) {
+		t.Fatalf("message after shrink is %d of %d bytes, want id 2 and the small payload", e.MessageID, len(e.Payload))
+	}
+}
+
+func TestShrinkAfterAPacketBurstStillDeliversTheNextMessage(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ReadBufferSize = 4
+
+	wire := newFake(KindPacket)
+	conn, err := NewConn(wire, schemaOf(t, 0x1111, msg(1, 0xAA)), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &harness{t: t, conn: conn, wire: wire}
+	h.tick(0)
+	h.handshake([]byte{0}, 0)
+
+	big := bytes.Repeat([]byte{0x7}, 5000)
+	data, _ := encodeData(1, big)
+	wire.deliver(data)
+	e := mustEvent(t, h.tick(time.Second), EventMessage)
+	if e.MessageID != 1 || !bytes.Equal(e.Payload, big) {
+		t.Fatalf("message %d of %d bytes, want the burst payload intact", e.MessageID, len(e.Payload))
+	}
+
+	h.conn.Shrink()
+
+	small := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	data, _ = encodeData(2, small)
+	wire.deliver(data)
+	e = mustEvent(t, h.tick(2*time.Second), EventMessage)
+	if e.MessageID != 2 || !bytes.Equal(e.Payload, small) {
+		t.Fatalf("message after shrink is %d of %d bytes, want id 2 and the small payload", e.MessageID, len(e.Payload))
+	}
+}
+
 func TestDrainStopsAtTheBudget(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.MaxFramesPerTick = 3
