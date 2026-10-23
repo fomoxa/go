@@ -308,10 +308,10 @@ Both return the same `*Conn`, with the same `Tick`, `Send`, `Close`, and `Transp
 
 Both built-in transports are implemented with `syscall.RawConn`, reading and writing through a callback that returns `true` on the first attempt, so neither call blocks waiting for socket readiness.
 TCP is a `KindStream` transport with `TCP_NODELAY` set; a partial kernel write is retained in an internal backlog and retried on the next `Send` or `Receive` call.
-UDP is a `KindPacket` transport; a single send is capped at 65,507 bytes of payload (`StatusTooLarge` above that), and an ICMP port-unreachable response (`ECONNREFUSED`) is treated as `StatusPending`, not as an error.
+UDP is a `KindPacket` transport; a single send is capped at 65,499 bytes of frame, which is 65,507 minus the 8-byte session identifier that starts every datagram (`StatusTooLarge` above that), and an ICMP port-unreachable response (`ECONNREFUSED`) is treated as `StatusPending`, not as an error.
 
-`ListenUDP`'s listener demultiplexes incoming datagrams by source address into a `Transport` per peer.
-It tracks at most 1,024 distinct source addresses at once; a datagram from a new address past that ceiling is dropped without disturbing any running session.
+`ListenUDP`'s listener demultiplexes incoming datagrams by that session identifier into a `Transport` per peer, so a peer keeps its session when its source address changes (`implementation-guide/en/03-udp-transport.md`).
+It tracks at most 1,024 peers at once; a datagram that would create a peer past that ceiling is dropped without disturbing any running session.
 Each tracked peer holds at most `MaxPeerBacklog` queued datagrams. Past that, the oldest queued datagram is dropped, so recent data survives a burst.
 `ListenTCP`'s listener accepts up to `MaxFramesPerTick` new connections per `Tick` call, reusing that field as its per-tick accept budget.
 

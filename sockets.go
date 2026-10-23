@@ -3,13 +3,16 @@
 package fomoxa
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"net"
 	"syscall"
 )
 
 const (
+	udpHeader          = 8
 	maxDatagram        = 65535
-	maxDatagramPayload = 65507
+	maxDatagramPayload = 65507 - udpHeader
 )
 
 type streamSocket interface {
@@ -148,6 +151,8 @@ type udpTransport struct {
 	conn      *net.UDPConn
 	raw       syscall.RawConn
 	scratch   []byte
+	out       []byte
+	session   uint64
 	have      int
 	hasPacket bool
 	closed    bool
@@ -162,7 +167,7 @@ func newUDPTransport(conn *net.UDPConn) (Transport, error) {
 	if err := prepareSocket(raw); err != nil {
 		return nil, err
 	}
-	return &udpTransport{conn: conn, raw: raw, scratch: make([]byte, maxDatagram)}, nil
+	return &udpTransport{conn: conn, raw: raw, scratch: make([]byte, maxDatagram), out: make([]byte, maxDatagram)}, nil
 }
 
 func (u *udpTransport) Kind() Kind { return KindPacket }
@@ -176,7 +181,10 @@ func (u *udpTransport) Send(b []byte) Status {
 	if len(b) > maxDatagramPayload {
 		return StatusTooLarge
 	}
-	n, err := rawWrite(u.raw, b)
+	binary.LittleEndian.PutUint64(u.out, u.session)
+	copy(u.out[udpHeader:], b)
+	total := udpHeader + len(b)
+	n, err := rawWrite(u.raw, u.out[:total])
 	if err != nil {
 		if wouldBlock(err) {
 			return StatusPending
@@ -188,14 +196,14 @@ func (u *udpTransport) Send(b []byte) Status {
 		u.err = err
 		return StatusError
 	}
-	if n != len(b) {
+	if n != total {
 		return StatusTooLarge
 	}
 	return StatusOK
 }
 
 func (u *udpTransport) Receive(buf []byte) (int, int, Status) {
-	if !u.hasPacket {
+	for !u.hasPacket {
 		if u.closed {
 			return 0, 0, StatusClosed
 		}
@@ -211,14 +219,22 @@ func (u *udpTransport) Receive(buf []byte) (int, int, Status) {
 			u.err = err
 			return 0, 0, StatusError
 		}
-		u.have = n
+		if n <= udpHeader {
+			continue
+		}
+		received := binary.LittleEndian.Uint64(u.scratch)
+		if received == 0 || (u.session != 0 && received != u.session) {
+			continue
+		}
+		u.session = received
+		u.have = n - udpHeader
 		u.hasPacket = true
 	}
 
 	if u.have > len(buf) {
 		return 0, u.have, StatusTooSmall
 	}
-	copy(buf, u.scratch[:u.have])
+	copy(buf, u.scratch[udpHeader:udpHeader+u.have])
 	n := u.have
 	u.have = 0
 	u.hasPacket = false
@@ -236,11 +252,12 @@ func (u *udpTransport) Close() {
 const maxTrackedPeers = 1024
 
 type udpPeer struct {
-	owner  *udpListener
-	addr   sockaddr
-	key    string
-	inbox  [][]byte
-	closed bool
+	owner   *udpListener
+	addr    sockaddr
+	key     string
+	session uint64
+	inbox   [][]byte
+	closed  bool
 }
 
 func (p *udpPeer) Kind() Kind { return KindPacket }
@@ -252,7 +269,10 @@ func (p *udpPeer) Send(b []byte) Status {
 	if len(b) > maxDatagramPayload {
 		return StatusTooLarge
 	}
-	err := rawSendto(p.owner.raw, b, p.addr)
+	datagram := make([]byte, udpHeader+len(b))
+	binary.LittleEndian.PutUint64(datagram, p.session)
+	copy(datagram[udpHeader:], b)
+	err := rawSendto(p.owner.raw, datagram, p.addr)
 	if err != nil {
 		if wouldBlock(err) {
 			return StatusPending
@@ -293,11 +313,12 @@ func (p *udpPeer) Close() {
 }
 
 type udpListener struct {
-	conn    *net.UDPConn
-	raw     syscall.RawConn
-	scratch []byte
-	peers   map[string]*udpPeer
-	cfg     Config
+	conn     *net.UDPConn
+	raw      syscall.RawConn
+	scratch  []byte
+	peers    map[string]*udpPeer
+	sessions map[uint64]*udpPeer
+	cfg      Config
 }
 
 func newUDPListener(conn *net.UDPConn, cfg Config) (listener, error) {
@@ -309,11 +330,12 @@ func newUDPListener(conn *net.UDPConn, cfg Config) (listener, error) {
 		return nil, err
 	}
 	return &udpListener{
-		conn:    conn,
-		raw:     raw,
-		scratch: make([]byte, maxDatagram),
-		peers:   make(map[string]*udpPeer),
-		cfg:     cfg,
+		conn:     conn,
+		raw:      raw,
+		scratch:  make([]byte, maxDatagram),
+		peers:    make(map[string]*udpPeer),
+		sessions: make(map[uint64]*udpPeer),
+		cfg:      cfg,
 	}, nil
 }
 
@@ -331,20 +353,45 @@ func (l *udpListener) poll() ([]Transport, error) {
 			continue
 		}
 
+		if n <= udpHeader {
+			continue
+		}
+		session := binary.LittleEndian.Uint64(l.scratch)
 		key := sockaddrKey(from)
-		peer, known := l.peers[key]
-		if !known {
-			// A UDP port hears from anyone, so an unbounded peer table is a
-			// stream of unknown source addresses away from exhausting memory.
-			// Past the ceiling a new address is treated exactly like a
-			// stranger's packet: dropped silently, running sessions untouched
-			// (01 §10).
-			if len(l.peers) >= maxTrackedPeers {
+		var peer *udpPeer
+		if session != 0 {
+			owner, ok := l.sessions[session]
+			if !ok {
 				continue
 			}
-			peer = &udpPeer{owner: l, addr: from, key: key}
-			l.peers[key] = peer
-			arrivals = append(arrivals, peer)
+			if owner.key != key {
+				if _, taken := l.peers[key]; taken {
+					continue
+				}
+				delete(l.peers, owner.key)
+				owner.addr = from
+				owner.key = key
+				l.peers[key] = owner
+			}
+			peer = owner
+		} else {
+			known, ok := l.peers[key]
+			if ok {
+				peer = known
+			} else {
+				// A UDP port hears from anyone, so an unbounded peer table is a
+				// stream of unknown source addresses away from exhausting memory.
+				// Past the ceiling a new address is treated exactly like a
+				// stranger's packet: dropped silently, running sessions untouched
+				// (01 §10).
+				if len(l.peers) >= maxTrackedPeers {
+					continue
+				}
+				peer = &udpPeer{owner: l, addr: from, key: key, session: l.newSession()}
+				l.peers[key] = peer
+				l.sessions[peer.session] = peer
+				arrivals = append(arrivals, peer)
+			}
 		}
 		if len(peer.inbox) >= l.cfg.MaxPeerBacklog {
 			// The oldest goes, not the newest: a real-time peer is better
@@ -352,8 +399,8 @@ func (l *udpListener) poll() ([]Transport, error) {
 			// decide otherwise (01 §6, §12).
 			peer.inbox = peer.inbox[1:]
 		}
-		packet := make([]byte, n)
-		copy(packet, l.scratch[:n])
+		packet := make([]byte, n-udpHeader)
+		copy(packet, l.scratch[udpHeader:n])
 		peer.inbox = append(peer.inbox, packet)
 	}
 	return arrivals, nil
@@ -362,6 +409,20 @@ func (l *udpListener) poll() ([]Transport, error) {
 func (l *udpListener) forget(t Transport) {
 	if peer, ok := t.(*udpPeer); ok {
 		delete(l.peers, peer.key)
+		delete(l.sessions, peer.session)
+	}
+}
+
+func (l *udpListener) newSession() uint64 {
+	var bytes [udpHeader]byte
+	for {
+		if _, err := rand.Read(bytes[:]); err != nil {
+			continue
+		}
+		candidate := binary.LittleEndian.Uint64(bytes[:])
+		if _, taken := l.sessions[candidate]; candidate != 0 && !taken {
+			return candidate
+		}
 	}
 }
 
@@ -369,5 +430,6 @@ func (l *udpListener) addr() net.Addr { return l.conn.LocalAddr() }
 
 func (l *udpListener) close() {
 	l.peers = make(map[string]*udpPeer)
+	l.sessions = make(map[uint64]*udpPeer)
 	_ = l.conn.Close()
 }
