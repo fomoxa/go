@@ -50,7 +50,7 @@ import fomoxa "github.com/fomoxa/go"
 ```
 
 Go has no separate package registry; `go get` resolves this import path directly against the git repository at `github.com/fomoxa/go`.
-The first release is tagged `v0.1.0`, so `go get github.com/fomoxa/go@v0.1.0` pins it.
+The latest release is tagged `v0.1.1`, so `go get github.com/fomoxa/go@v0.1.1` pins it.
 A commit after the latest tag resolves to a pseudo-version, and `go get github.com/fomoxa/go@<commit>` pins that exactly.
 
 `go.mod` declares `go 1.27.1` as the minimum toolchain; the CI workflow builds and tests with that version on Linux and Windows.
