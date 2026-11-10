@@ -50,7 +50,7 @@ import fomoxa "github.com/fomoxa/go"
 ```
 
 Go has no separate package registry; `go get` resolves this import path directly against the git repository at `github.com/fomoxa/go`.
-The latest release is tagged `v0.1.1`, so `go get github.com/fomoxa/go@v0.1.1` pins it.
+The latest release is tagged `v0.1.2`, so `go get github.com/fomoxa/go@v0.1.2` pins it.
 A commit after the latest tag resolves to a pseudo-version, and `go get github.com/fomoxa/go@<commit>` pins that exactly.
 
 `go.mod` declares `go 1.27.1` as the minimum toolchain; the CI workflow builds and tests with that version on Linux and Windows.
@@ -239,6 +239,8 @@ The handshake is carried in `FrameHandshake` frames, always the client's initiat
 
 A refusal frame is written to the outbound queue and flushed before the transport's send side is closed, so the peer receives the verdict before the connection closes.
 
+On a packet transport, a handshake payload whose `FrameHandshake` frame would be longer than 900 bytes goes out as `FrameHandshakePart` frames, one per packet (implementation guide §2.8); a hello splits from 63 messages on. Each part carries up to 891 bytes of the payload. The receiver places the parts by index, in any order, and reads the assembled payload as it reads the payload of one `FrameHandshake` frame. A repeated part with the same bytes is ignored. The handshake fails with `VerdictMalformed` when the part count is below 2 or above 1,177, an index is not below the count, a part other than the last does not carry exactly 891 bytes, the last part is empty, the count differs from that of the first part, a repeated part carries different bytes, the assembled payload is longer than 1 MiB, or a `FrameHandshake` frame arrives while parts are missing. A part that arrives after the verdict is dropped and does not count as activity. A byte-stream transport sends every handshake payload as one `FrameHandshake` frame, whatever its size.
+
 ### 9.1 Handshake payload layouts
 
 All multi-byte integers are little-endian.
@@ -263,9 +265,10 @@ All multi-byte integers are little-endian.
 | `FrameProbe` | 1 | `[01]` | 1 byte, no body |
 | `FrameAck` | 2 | `[02]` | 1 byte, no body |
 | `FrameHandshake` | 3 | `[03][length u32][payload]` | 5 + length |
+| `FrameHandshakePart` | 4 | `[04][part index u16][part count u16][length u32][part bytes]` | 9 + length, at most 900 |
 
 A data frame's magic bytes are `0x43` (`'C'`) and `0x59` (`'Y'`) at offsets 1 and 2.
-`MaxMessagePayload` is 16 MiB (16,777,216 bytes); `MaxHandshakePayload` is 1 MiB (1,048,576 bytes); a frame type byte outside `0..3` is a violation.
+`MaxMessagePayload` is 16 MiB (16,777,216 bytes); `MaxHandshakePayload` is 1 MiB (1,048,576 bytes); a frame type byte outside `0..4` is a violation. `FrameHandshakePart` exists only on packet transports. On a byte stream it is a violation; on a packet transport, a part that declares more than 891 bytes is a violation and costs that packet.
 
 On a byte-stream transport, frames run back to back and any violation is fatal: the stream decoder is poisoned and returns the same error on every subsequent call, since there is no point in the stream where framing can be safely resumed (`TestStreamDecoderStaysPoisoned`).
 On a packet transport, one packet holds exactly one frame; a violation costs only that packet, and the session continues (`TestPacketViolationOnlyDropsThatPacket`).
@@ -328,7 +331,7 @@ Each tracked peer holds at most `MaxPeerBacklog` queued datagrams. Past that, th
 | `ErrUnsupported` | `fomoxa: non-blocking sockets are not implemented on this platform` |
 
 `Send` refuses with `ErrCongested` while a frame is already queued waiting for the transport, and does not queue a second one; no other frame may pass a queued frame on that `Conn`.
-A `Conn`'s outbound queue is bounded at 64 KiB across the data frame plus whatever control frames the protocol can owe at once; exceeding that ceiling ends the session, since it means the peer has stopped reading.
+A `Conn`'s outbound queue is bounded at 64 KiB across the data frame plus whatever control frames the protocol can owe at once; exceeding that ceiling ends the session, since it means the peer has stopped reading. Handshake parts do not count toward the ceiling, because a payload of up to 1 MiB is queued as parts all at once.
 
 ## 13. Platform support
 
@@ -360,14 +363,15 @@ go test ./...
 go test -race ./...
 ```
 
-The suite has 77 top-level test functions across six files (93 including table-driven sub-tests), organized by the implementation guide's §11 checklist:
+The suite has 106 top-level test functions across eight files (122 including table-driven sub-tests), organized by the implementation guide's §11 checklist:
 
 - `frame_test.go`: byte-exact frame layouts, a stream decoded one byte at a time, a stream decoder that stays poisoned after a violation, payload size ceilings, and that an oversized declared length is rejected without allocating a buffer of that size.
 - `handshake_test.go`: all branches of the server's fingerprint comparison, the query round in both directions, malformed hello and query-reply payloads, protocol version mismatches, and the field-appended-at-the-end interoperability requirement from RFC-0003 §8.6.
 - `heartbeat_test.go`: traffic suppressing probes, exactly one probe per silence window, any frame ending a probe cycle, a full expiry cycle driven by a fake clock, and the server's wider silence window while a peer is still handshaking.
 - `flow_test.go`: a blocked transport holding and later resending exactly one frame, congestion refused instead of queued, an oversized frame not ending the session, the per-tick frame budget, byte-stream versus packet violation handling, and the outbound-queue ceiling under a peer that keeps probing without reading.
+- `handshake_part_test.go`: the split at 63 messages, the part layout, parts of at most 900 bytes, a stream transport keeping one frame, assembly in reverse order and with a repeated part, each way a set of parts can fail the handshake, a part after the verdict, a part on a byte stream, a query round in parts, parts held by a blocked transport leaving as separate packets, and a hello larger than the outbound ceiling.
 - `interop_test.go`: client and server driven against each other over an in-memory pipe on both `Kind` values, a schema conflict refusing both ends, a `Server` running multiple peers, and a `Conn` built with `NewPeerConn` against a hand-supplied transport.
-- `sockets_test.go` (`unix || windows` build tag): live TCP and UDP loopback sessions in both directions, a schema conflict over a real socket, a server-initiated disconnect, and two UDP clients kept isolated from each other on one listening socket.
+- `sockets_test.go` (`unix || windows` build tag): live TCP and UDP loopback sessions in both directions, a schema conflict over a real socket, a server-initiated disconnect, two UDP clients kept isolated from each other on one listening socket, and a 300-message handshake over UDP.
 
 CI (`.github/workflows/ci.yml`) runs on push to `main` and on pull requests: `gofmt -l .` must report no files, `go vet ./...`, `go build ./...`, and `go test -race ./...`, on `ubuntu-latest` and `windows-latest` with the Go version from `go.mod`; the format check runs on Linux only, since a Windows checkout may convert line endings.
 

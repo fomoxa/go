@@ -147,6 +147,18 @@ func TestLiveUDPSession(t *testing.T) {
 	}
 }
 
+func TestLiveUDPCarriesA300MessageHandshakeInDatagramsOfAtMost908Bytes(t *testing.T) {
+	if udpHeader+packetHandshakeBudget > 908 {
+		t.Fatalf("a handshake datagram can be %d bytes", udpHeader+packetHandshakeBudget)
+	}
+	l := liveUDP(t, many(t, 300))
+
+	l.pump(5*time.Second, func() bool { return l.sawClient(EventReady) && l.sawServer(EventReady) })
+	if !l.sawClient(EventReady) || !l.sawServer(EventReady) {
+		t.Fatalf("handshake never finished: client %v server %v", kinds(l.clientEvents), kinds(l.serverEvents))
+	}
+}
+
 func TestLiveTCPRefusesAConflictingSchema(t *testing.T) {
 	server, err := ListenTCP("127.0.0.1:0", schemaOf(t, 0x1111, msg(1, 0xAA, 0xBB)), DefaultConfig())
 	if err != nil {

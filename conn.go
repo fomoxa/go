@@ -12,7 +12,9 @@ type Conn struct {
 	cfg       Config
 
 	peer           PeerID
-	outbound       [][]byte
+	packet         bool
+	parts          assembler
+	outbound       []pending
 	outboundBytesN int
 	dead           bool
 	deadCause      error
@@ -37,6 +39,7 @@ func NewConn(t Transport, schema *Schema, cfg Config) (*Conn, error) {
 		source:    newFrameSource(t, cfg.ReadBufferSize),
 		session:   newSession(roleClient, schema, cfg),
 		cfg:       cfg,
+		packet:    t.Kind() == KindPacket,
 	}, nil
 }
 
@@ -57,6 +60,7 @@ func newServerConn(t Transport, schema *Schema, cfg Config, peer PeerID) *Conn {
 		session:   newSession(roleServer, schema, cfg),
 		cfg:       cfg,
 		peer:      peer,
+		packet:    t.Kind() == KindPacket,
 	}
 }
 
@@ -80,8 +84,9 @@ func (c *Conn) Transport() Transport { return c.transport }
 
 func (c *Conn) Shrink() {
 	c.source.shrink()
+	c.parts.shrink()
 	if len(c.outbound) < cap(c.outbound) {
-		fresh := make([][]byte, len(c.outbound))
+		fresh := make([]pending, len(c.outbound))
 		copy(fresh, c.outbound)
 		c.outbound = fresh
 	}
@@ -136,7 +141,7 @@ func (c *Conn) Send(messageID uint32, payload []byte) error {
 	case StatusOK:
 		return nil
 	case StatusPending:
-		c.outbound = append(c.outbound, f)
+		c.outbound = append(c.outbound, pending{bytes: f, counted: true})
 		c.outboundBytesN += len(f)
 		return nil
 	case StatusTooLarge:
@@ -163,9 +168,12 @@ func (c *Conn) Close() error {
 
 func (c *Conn) flush() {
 	for len(c.outbound) > 0 {
-		switch c.transport.Send(c.outbound[0]) {
+		head := c.outbound[0]
+		switch c.transport.Send(head.bytes) {
 		case StatusOK, StatusTooLarge:
-			c.outboundBytesN -= len(c.outbound[0])
+			if head.counted {
+				c.outboundBytesN -= len(head.bytes)
+			}
 			c.outbound = append(c.outbound[:0], c.outbound[1:]...)
 		case StatusPending:
 			return
@@ -182,7 +190,7 @@ func (c *Conn) drain(now time.Time) {
 		f, status, err := c.source.next()
 		switch status {
 		case srcFrame:
-			c.apply(c.session.handleFrame(f, now))
+			c.apply(c.handle(f, now))
 			budget--
 			if c.dead {
 				return
@@ -201,8 +209,42 @@ func (c *Conn) drain(now time.Time) {
 	}
 }
 
+func (c *Conn) handle(f frame, now time.Time) outcome {
+	switch {
+	case f.typ == FrameHandshakePart:
+		return c.handlePart(f, now)
+	case f.typ == FrameHandshake && c.parts.pending():
+		c.parts.reset()
+		return c.session.handleFrame(frame{typ: FrameHandshake}, now)
+	default:
+		return c.session.handleFrame(f, now)
+	}
+}
+
+func (c *Conn) handlePart(f frame, now time.Time) outcome {
+	if c.session.state != StateHandshaking {
+		return outcome{}
+	}
+	switch c.parts.add(f) {
+	case assemblyPending:
+		return c.session.handleFrame(frame{typ: FrameHandshakePart}, now)
+	case assemblyComplete:
+		o := c.session.handleFrame(frame{typ: FrameHandshake, payload: c.parts.body()}, now)
+		c.parts.reset()
+		return o
+	default:
+		c.parts.reset()
+		return c.session.handleFrame(frame{typ: FrameHandshake}, now)
+	}
+}
+
 func (c *Conn) apply(o outcome) {
-	if o.frame != nil {
+	if o.frame != nil && c.packet && len(o.frame) > packetHandshakeBudget && FrameType(o.frame[0]) == FrameHandshake {
+		for _, part := range encodeParts(o.frame[handshakeHeaderLen:]) {
+			c.outbound = append(c.outbound, pending{bytes: part})
+		}
+		c.flush()
+	} else if o.frame != nil {
 		// Queue behind whatever is already waiting, never overwrite it: a
 		// refusal verdict lost that way leaves the peer waiting out its
 		// deadline without ever learning why. The protocol caps how many
@@ -213,7 +255,7 @@ func (c *Conn) apply(o outcome) {
 			c.markDead(fmt.Errorf("fomoxa: peer stopped reading, %d bytes still pending", c.outboundBytesN))
 			return
 		}
-		c.outbound = append(c.outbound, o.frame)
+		c.outbound = append(c.outbound, pending{bytes: o.frame, counted: true})
 		c.outboundBytesN += len(o.frame)
 		c.flush()
 	}
@@ -238,6 +280,11 @@ func (c *Conn) apply(o outcome) {
 // any moment: one probe per silence window, one reply per probe, and at most
 // one query round per session.
 const maxOutboundBytes = 64 * 1024
+
+type pending struct {
+	bytes   []byte
+	counted bool
+}
 
 func (c *Conn) markDead(cause error) {
 	if c.dead {

@@ -9,10 +9,11 @@ import (
 type FrameType byte
 
 const (
-	FrameData      FrameType = 0
-	FrameProbe     FrameType = 1
-	FrameAck       FrameType = 2
-	FrameHandshake FrameType = 3
+	FrameData          FrameType = 0
+	FrameProbe         FrameType = 1
+	FrameAck           FrameType = 2
+	FrameHandshake     FrameType = 3
+	FrameHandshakePart FrameType = 4
 )
 
 func (t FrameType) String() string {
@@ -25,6 +26,8 @@ func (t FrameType) String() string {
 		return "ack"
 	case FrameHandshake:
 		return "handshake"
+	case FrameHandshakePart:
+		return "handshake part"
 	default:
 		return fmt.Sprintf("frame type 0x%02X", byte(t))
 	}
@@ -36,6 +39,11 @@ const (
 
 	dataHeaderLen      = 11
 	handshakeHeaderLen = 5
+	partHeaderLen      = 9
+
+	packetHandshakeBudget = 900
+	partContentLen        = packetHandshakeBudget - partHeaderLen
+	maxHandshakeParts     = (MaxHandshakePayload + partContentLen - 1) / partContentLen
 
 	MaxMessagePayload   = 16 * 1024 * 1024
 	MaxHandshakePayload = 1024 * 1024
@@ -50,6 +58,8 @@ var (
 type frame struct {
 	typ       FrameType
 	messageID uint32
+	partIndex int
+	partCount int
 	payload   []byte
 }
 
@@ -88,6 +98,27 @@ func encodeHandshake(payload []byte) ([]byte, error) {
 	binary.LittleEndian.PutUint32(out[1:5], uint32(len(payload)))
 	copy(out[handshakeHeaderLen:], payload)
 	return out, nil
+}
+
+func encodePart(index, count int, content []byte) []byte {
+	out := make([]byte, partHeaderLen+len(content))
+	out[0] = byte(FrameHandshakePart)
+	binary.LittleEndian.PutUint16(out[1:3], uint16(index))
+	binary.LittleEndian.PutUint16(out[3:5], uint16(count))
+	binary.LittleEndian.PutUint32(out[5:9], uint32(len(content)))
+	copy(out[partHeaderLen:], content)
+	return out
+}
+
+func encodeParts(body []byte) [][]byte {
+	count := (len(body) + partContentLen - 1) / partContentLen
+	parts := make([][]byte, count)
+	for index := range parts {
+		offset := index * partContentLen
+		end := min(offset+partContentLen, len(body))
+		parts[index] = encodePart(index, count, body[offset:end])
+	}
+	return parts
 }
 
 func decodeFrame(b []byte) (frame, int, error) {
@@ -138,8 +169,26 @@ func decodeFrame(b []byte) (frame, int, error) {
 			return frame{}, 0, errIncomplete
 		}
 		return frame{typ: FrameHandshake, payload: b[handshakeHeaderLen:total]}, total, nil
+	case FrameHandshakePart:
+		if len(b) < partHeaderLen {
+			return frame{}, 0, errIncomplete
+		}
+		length := binary.LittleEndian.Uint32(b[5:9])
+		if length > partContentLen {
+			return frame{}, 0, frameErrorf("fomoxa: handshake part of %d bytes exceeds %d", length, partContentLen)
+		}
+		total := partHeaderLen + int(length)
+		if len(b) < total {
+			return frame{}, 0, errIncomplete
+		}
+		return frame{
+			typ:       FrameHandshakePart,
+			partIndex: int(binary.LittleEndian.Uint16(b[1:3])),
+			partCount: int(binary.LittleEndian.Uint16(b[3:5])),
+			payload:   b[partHeaderLen:total],
+		}, total, nil
 	default:
-		return frame{}, 0, frameErrorf("fomoxa: frame type 0x%02X is not 0..3", b[0])
+		return frame{}, 0, frameErrorf("fomoxa: frame type 0x%02X is not 0..4", b[0])
 	}
 }
 
@@ -173,6 +222,10 @@ func (d *streamDecoder) feed(b []byte) {
 
 func (d *streamDecoder) next() (frame, bool, error) {
 	if d.poisoned != nil {
+		return frame{}, false, d.poisoned
+	}
+	if d.off < len(d.buf) && FrameType(d.buf[d.off]) == FrameHandshakePart {
+		d.poisoned = frameErrorf("fomoxa: a handshake part arrived on a byte stream")
 		return frame{}, false, d.poisoned
 	}
 	f, n, err := decodeFrame(d.buf[d.off:])
