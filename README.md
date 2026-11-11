@@ -316,6 +316,7 @@ UDP is a `KindPacket` transport; a single send is capped at 65,499 bytes of fram
 `ListenUDP`'s listener demultiplexes incoming datagrams by that session identifier into a `Transport` per peer, so a peer keeps its session when its source address changes (`implementation-guide/en/03-udp-transport.md`).
 It tracks at most 1,024 peers at once; a datagram that would create a peer past that ceiling is dropped without disturbing any running session.
 Each tracked peer holds at most `MaxPeerBacklog` queued datagrams. Past that, the oldest queued datagram is dropped, so recent data survives a burst.
+A handshake body that arrives in more parts than that backlog can therefore lose its first parts when they come in together; with the default of 64, that is a greeting of more than about 4,000 messages (`implementation-guide/en/02-flows.md` §2.8). The handshake then expires and the client gets `EventHandshakeFailed`. A server whose schema is that large can raise `MaxPeerBacklog`.
 `ListenTCP`'s listener accepts up to `MaxFramesPerTick` new connections per `Tick` call, reusing that field as its per-tick accept budget.
 
 ## 12. Errors
